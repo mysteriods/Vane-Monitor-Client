@@ -33,6 +33,7 @@ class NetworkClient:
             try:
                 with open(config_file, 'r') as f:
                     client_config = json.load(f)
+                self.config = None
                 self.client_name = client_config.get('client_name', 'unknown_client')
                 self.server_url = server_url or client_config.get('server_url', 'http://localhost:5000')
                 self.test_interval = client_config.get('test_interval', 60)
@@ -177,9 +178,23 @@ class NetworkClient:
             logger.warning(f"Failed to fetch dns_test_domains from server: {e}")
 
         # Fallback to configured DNS targets if server-side table is unavailable
-        fallback_domains = self.config.get('client', 'tests', 'dns', 'targets', default=[])
+        if self.config:
+            fallback_domains = self.config.get('client', 'tests', 'dns', 'targets', default=[])
+        else:
+            fallback_domains = []
         logger.info(f"Using fallback DNS domain list from config: {len(fallback_domains)} target(s)")
         return fallback_domains if isinstance(fallback_domains, list) else []
+
+    def run_packet_loss_probe_for_destination(self, destination: dict) -> Optional[dict]:
+        """Run 100 ping probes for a destination when ping is enabled."""
+        if not destination.get('test_ping'):
+            return None
+
+        target = destination.get('target', '')
+        if not target:
+            return None
+
+        return self.monitor.packet_loss_ping_test(target=target, count=100, timeout=1.0, interval=0.05)
     
     def run_destination_tests(self, destination: dict, dns_test_domains: list = None) -> list:
         """Run tests for a specific destination"""
@@ -190,8 +205,9 @@ class NetworkClient:
         logger.info(f"Testing destination: {name} ({target})")
         
         # Ping test
-        if destination.get('test_ping'):
-            result = self.monitor.ping_test(target, count=4, timeout=5)
+        packet_loss_result = self.run_packet_loss_probe_for_destination(destination)
+        if packet_loss_result:
+            result = packet_loss_result
             results.append(result)
         
         # DNS test
