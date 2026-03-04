@@ -56,10 +56,110 @@ class NetworkClient:
         self.monitor = NetworkMonitor()
         self.running = False
         self.registered = False
+        self.api_key = None
+        self._config_file = config_file
+        
+        # Load saved API key if available
+        self._load_api_key()
         
         logger.info(f"Client initialized: {self.client_name}")
         logger.info(f"Server URL: {self.server_url}")
         logger.info(f"Test interval: {self.test_interval} seconds")
+
+    # ---------- API-key persistence ----------
+
+    @property
+    def _api_key_path(self):
+        return os.path.join(os.path.dirname(self._config_file or 'client_config.json') or '.', '.vane_api_key')
+
+    def _load_api_key(self):
+        """Load a previously obtained API key from disk."""
+        try:
+            if os.path.exists(self._api_key_path):
+                with open(self._api_key_path, 'r') as f:
+                    self.api_key = f.read().strip()
+                if self.api_key:
+                    logger.info("Loaded saved API key")
+        except Exception as e:
+            logger.warning(f"Could not load API key: {e}")
+
+    def _save_api_key(self, key: str):
+        """Persist the API key to disk."""
+        try:
+            with open(self._api_key_path, 'w') as f:
+                f.write(key)
+            self.api_key = key
+            logger.info("API key saved to disk")
+        except Exception as e:
+            logger.error(f"Failed to save API key: {e}")
+
+    def _auth_headers(self) -> dict:
+        """Return headers dict that includes the API key if available."""
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'VaneMonitor-Client/1.0'
+        }
+        if self.api_key:
+            headers['X-API-Key'] = self.api_key
+        return headers
+
+    def authenticate_with_server(self) -> bool:
+        """Authenticate with server using username/password and obtain an API key.
+        Prompts user interactively for credentials on first run."""
+        if self.api_key:
+            # Verify the key is still valid by hitting a lightweight endpoint
+            try:
+                req = urllib.request.Request(
+                    f"{self.server_url}/api/clients",
+                    headers=self._auth_headers()
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        logger.info("Existing API key is valid")
+                        return True
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    logger.warning("Saved API key is no longer valid, re-authenticating...")
+                    self.api_key = None
+                else:
+                    raise
+            except Exception:
+                pass
+
+        # Interactive prompt
+        print("\n" + "="*60)
+        print("  CLIENT AUTHENTICATION")
+        print("="*60)
+        print("\nEnter server credentials (a user with 'client' or 'admin' role):\n")
+
+        username = input("Username: ").strip()
+        import getpass
+        password = getpass.getpass("Password: ")
+
+        try:
+            data = json.dumps({'username': username, 'password': password}).encode('utf-8')
+            req = urllib.request.Request(
+                f"{self.server_url}/api/auth/token",
+                data=data,
+                headers={'Content-Type': 'application/json', 'User-Agent': 'VaneMonitor-Client/1.0'},
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+                if result.get('success') and result.get('api_key'):
+                    self._save_api_key(result['api_key'])
+                    print("✅ Authenticated successfully. API key saved.\n" + "="*60 + "\n")
+                    return True
+                else:
+                    print(f"❌ Authentication failed: {result.get('error', 'Unknown error')}\n")
+                    return False
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')
+            print(f"❌ Authentication failed (HTTP {e.code}): {body}\n")
+            return False
+        except Exception as e:
+            print(f"❌ Authentication error: {e}\n")
+            return False
     
     def register_with_server(self) -> bool:
         """Register client with the server before starting tests"""
@@ -73,10 +173,7 @@ class NetworkClient:
             req = urllib.request.Request(
                 f"{self.server_url}/api/register",
                 data=json_data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'VaneMonitor-Client/1.0'
-                },
+                headers=self._auth_headers(),
                 method='POST'
             )
             
@@ -110,10 +207,7 @@ class NetworkClient:
             req = urllib.request.Request(
                 f"{self.server_url}/api/submit",
                 data=json_data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'VaneMonitor-Client/1.0'
-                },
+                headers=self._auth_headers(),
                 method='POST'
             )
             
@@ -137,7 +231,7 @@ class NetworkClient:
         try:
             req = urllib.request.Request(
                 f"{self.server_url}/api/destinations",
-                headers={'User-Agent': 'VaneMonitor-Client/1.0'}
+                headers=self._auth_headers()
             )
             
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -163,7 +257,7 @@ class NetworkClient:
         try:
             req = urllib.request.Request(
                 f"{self.server_url}/api/dns-test-domains",
-                headers={'User-Agent': 'VaneMonitor-Client/1.0'}
+                headers=self._auth_headers()
             )
 
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -292,6 +386,12 @@ class NetworkClient:
     def start(self):
         """Start the client with scheduled testing"""
         logger.info(f"Starting network monitoring client: {self.client_name}")
+        
+        # Authenticate with server (obtain or verify API key)
+        logger.info("Authenticating with server...")
+        if not self.authenticate_with_server():
+            logger.error("Authentication failed. Cannot start client without valid API key.")
+            return
         
         # Register with server before starting tests
         logger.info("Registering with server...")
