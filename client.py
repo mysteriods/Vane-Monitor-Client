@@ -108,9 +108,10 @@ class NetworkClient:
         Prompts user interactively for credentials on first run."""
         if self.api_key:
             # Verify the key is still valid by hitting a lightweight endpoint
+            # Use /api/destinations because it allows the 'client' role
             try:
                 req = urllib.request.Request(
-                    f"{self.server_url}/api/clients",
+                    f"{self.server_url}/api/destinations",
                     headers=self._auth_headers()
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
