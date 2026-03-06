@@ -6,6 +6,7 @@ import time
 import logging
 import json
 import os
+import ssl
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -37,6 +38,7 @@ class NetworkClient:
                 self.client_name = client_config.get('client_name', 'unknown_client')
                 self.server_url = server_url or client_config.get('server_url', 'http://localhost:5000')
                 self.test_interval = client_config.get('test_interval', 60)
+                self.verify_ssl = client_config.get('verify_ssl', True)
             except Exception as e:
                 logger.error(f"Error loading client_config.json: {e}")
                 raise
@@ -52,19 +54,44 @@ class NetworkClient:
             self.client_name = self.config.get('client', 'client_name',
                                               default=self.config.get('client', 'client_id', default='default_client'))
             self.test_interval = self.config.get('client', 'test_interval')
+            self.verify_ssl = self.config.get('client', 'verify_ssl', default=True)
         
         self.monitor = NetworkMonitor()
         self.running = False
         self.registered = False
         self.api_key = None
         self._config_file = config_file
-        
+
+        # Build SSL context for server communication
+        self._ssl_context = self._build_ssl_context()
+
         # Load saved API key if available
         self._load_api_key()
         
         logger.info(f"Client initialized: {self.client_name}")
         logger.info(f"Server URL: {self.server_url}")
         logger.info(f"Test interval: {self.test_interval} seconds")
+        logger.info(f"SSL verification: {'enabled' if self.verify_ssl else 'DISABLED (self-signed)'}")
+
+    # ---------- SSL helpers ----------
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        """Return an SSL context used by all urllib calls.
+
+        When *verify_ssl* is False (typical for self-signed certs),
+        certificate verification is skipped.
+        """
+        if self.verify_ssl:
+            ctx = ssl.create_default_context()
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def _urlopen(self, req, timeout=10):
+        """Wrapper around urllib.request.urlopen that injects the SSL context."""
+        return urllib.request.urlopen(req, timeout=timeout, context=self._ssl_context)
 
     # ---------- API-key persistence ----------
 
@@ -114,7 +141,7 @@ class NetworkClient:
                     f"{self.server_url}/api/destinations",
                     headers=self._auth_headers()
                 )
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with self._urlopen(req, timeout=10) as resp:
                     if resp.status == 200:
                         logger.info("Existing API key is valid")
                         return True
@@ -145,7 +172,7 @@ class NetworkClient:
                 headers={'Content-Type': 'application/json', 'User-Agent': 'VaneMonitor-Client/1.0'},
                 method='POST'
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with self._urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
                 if result.get('success') and result.get('api_key'):
                     self._save_api_key(result['api_key'])
@@ -178,7 +205,7 @@ class NetworkClient:
                 method='POST'
             )
             
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     result = json.loads(response.read().decode('utf-8'))
                     logger.info(f"Successfully registered with server: {result.get('message', 'OK')}")
@@ -212,7 +239,7 @@ class NetworkClient:
                 method='POST'
             )
             
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._urlopen(req, timeout=30) as response:
                 if response.status == 200:
                     logger.info(f"Successfully sent {len(results)} test results to server")
                     return True
@@ -235,7 +262,7 @@ class NetworkClient:
                 headers=self._auth_headers()
             )
             
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
                     destinations = [d for d in data.get('destinations', []) if d.get('enabled')]
@@ -261,7 +288,7 @@ class NetworkClient:
                 headers=self._auth_headers()
             )
 
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._urlopen(req, timeout=10) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
                     domains = [item.get('domain') for item in data.get('domains', []) if item.get('domain')]
