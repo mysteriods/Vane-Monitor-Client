@@ -307,107 +307,140 @@ class NetworkClient:
         logger.info(f"Using fallback DNS domain list from config: {len(fallback_domains)} target(s)")
         return fallback_domains if isinstance(fallback_domains, list) else []
 
-    def run_packet_loss_probe_for_destination(self, destination: dict) -> Optional[dict]:
-        """Run 100 ping probes for a destination when ping is enabled."""
-        if not destination.get('test_ping'):
-            return None
-
-        target = destination.get('target', '')
-        if not target:
-            return None
-
-        return self.monitor.packet_loss_ping_test(target=target, count=100, timeout=1.0, interval=0.05)
-    
     def run_destination_tests(self, destination: dict, dns_test_domains: list = None) -> list:
-        """Run tests for a specific destination"""
-        results = []
+        """Run all enabled tests for a destination concurrently.
+
+        Independent test types (ping, HTTP, HTTPS, jitter, traceroute, port scan,
+        and individual DNS domain lookups) are submitted to a thread pool and
+        executed in parallel so that the slowest test (usually traceroute) no
+        longer serialises everything else.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         target = destination['target']
         name = destination['name']
-        
-        logger.info(f"Testing destination: {name} ({target})")
-        
-        # Ping test
-        packet_loss_result = self.run_packet_loss_probe_for_destination(destination)
-        if packet_loss_result:
-            result = packet_loss_result
-            results.append(result)
-        
-        # DNS test
-        if destination.get('test_dns'):
-            domains_to_resolve = dns_test_domains if isinstance(dns_test_domains, list) else []
-            if not domains_to_resolve:
-                logger.warning(f"[DNS TEST] No dns_test_domains available for resolver destination {name} ({target})")
 
-            logger.info(f"[DNS TEST] Resolver {target} will resolve {len(domains_to_resolve)} domain(s)")
-            for domain in domains_to_resolve:
-                logger.info(f"[DNS TEST] Resolving {domain} using resolver {target}")
-                result = self.monitor.dns_test(domain, target)
-                results.append(result)
-        
-        # HTTP test
-        if destination.get('test_http'):
-            http_target = target if target.startswith('http://') else f"http://{target}"
-            result = self.monitor.http_test(http_target)
-            results.append(result)
-        
-        # HTTPS test
-        if destination.get('test_https'):
-            https_target = target if target.startswith('https://') else f"https://{target}"
-            result = self.monitor.http_test(https_target)
-            results.append(result)
-        
-        # Jitter test
-        if destination.get('test_jitter'):
-            result = self.monitor.jitter_test(target, count=10, timeout=5)
-            results.append(result)
-        
-        # Traceroute test
-        if destination.get('test_traceroute'):
-            result = self.monitor.traceroute_test(target, max_hops=30)
-            results.append(result)
-        
-        # Port scan test
-        if destination.get('test_ports'):
-            ports_str = destination['test_ports']
-            if ports_str:
+        logger.info(f"Testing destination: {name} ({target})")
+
+        futures_map = {}
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            # --- Packet-loss / ping test ---
+            if destination.get('test_ping'):
+                futures_map[executor.submit(
+                    self.monitor.packet_loss_ping_test, target, 100, 1.0, 0.05
+                )] = 'ping'
+
+            # --- HTTP test ---
+            if destination.get('test_http'):
+                http_target = target if target.startswith('http://') else f"http://{target}"
+                futures_map[executor.submit(self.monitor.http_test, http_target)] = 'http'
+
+            # --- HTTPS test ---
+            if destination.get('test_https'):
+                https_target = target if target.startswith('https://') else f"https://{target}"
+                futures_map[executor.submit(self.monitor.http_test, https_target)] = 'https'
+
+            # --- Jitter test ---
+            if destination.get('test_jitter'):
+                futures_map[executor.submit(
+                    self.monitor.jitter_test, target, 10, 5
+                )] = 'jitter'
+
+            # --- Traceroute test ---
+            if destination.get('test_traceroute'):
+                futures_map[executor.submit(
+                    self.monitor.traceroute_test, target, 30
+                )] = 'traceroute'
+
+            # --- Port scan test ---
+            if destination.get('test_ports'):
+                ports_str = destination['test_ports']
+                if ports_str:
+                    try:
+                        ports = [int(p.strip()) for p in ports_str.split(',') if p.strip()]
+                        if ports:
+                            futures_map[executor.submit(
+                                self.monitor.port_scan_test, target, ports
+                            )] = 'port_scan'
+                    except ValueError:
+                        logger.error(f"Invalid port configuration for {name}: {ports_str}")
+
+            # --- DNS tests (one concurrent lookup per domain) ---
+            if destination.get('test_dns'):
+                domains_to_resolve = dns_test_domains if isinstance(dns_test_domains, list) else []
+                if not domains_to_resolve:
+                    logger.warning(
+                        f"[DNS TEST] No dns_test_domains available for resolver destination {name} ({target})"
+                    )
+                logger.info(f"[DNS TEST] Resolver {target} will resolve {len(domains_to_resolve)} domain(s)")
+                for domain in domains_to_resolve:
+                    futures_map[executor.submit(
+                        self.monitor.dns_test, domain, target
+                    )] = f'dns:{domain}'
+
+            results = []
+            for fut in as_completed(futures_map):
+                test_label = futures_map[fut]
                 try:
-                    ports = [int(p.strip()) for p in ports_str.split(',') if p.strip()]
-                    if ports:
-                        result = self.monitor.port_scan_test(target, ports)
+                    result = fut.result()
+                    if result:
                         results.append(result)
-                except ValueError:
-                    logger.error(f"Invalid port configuration for {name}: {ports_str}")
-        
+                except Exception as exc:
+                    logger.error(f"Test '{test_label}' for {name} ({target}) raised: {exc}")
+
         return results
     
+    def _run_and_send_destination(self, dest: dict, dns_test_domains: list) -> None:
+        """Run all tests for *dest* and immediately send results to the server."""
+        dest_results = self.run_destination_tests(dest, dns_test_domains=dns_test_domains)
+        if dest_results:
+            success_count = sum(1 for r in dest_results if r.get('success', False))
+            logger.info(
+                f"Completed {len(dest_results)} tests for {dest['name']} "
+                f"({success_count} successful)"
+            )
+            self.send_results(dest_results)
+        else:
+            logger.warning(f"No results for destination {dest['name']}")
+
     def run_tests(self):
-        """Run all configured network tests"""
+        """Run all configured network tests.
+
+        All destinations are tested concurrently (up to 5 at a time) so that a
+        slow destination (e.g. one with traceroute enabled) cannot delay results
+        from faster ones.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         logger.info("Running network tests...")
-        
+
         try:
-            # Try to fetch destinations from server
             destinations = self.fetch_destinations()
-            
+
             if destinations:
-                # Fetch DNS test domains once for all destinations
                 dns_test_domains = self.fetch_dns_test_domains()
-                
-                # Test each destination and send results immediately
-                for dest in destinations:
-                    logger.info(f"Testing destination: {dest['name']} ({dest['target']})")
-                    
-                    dest_results = self.run_destination_tests(dest, dns_test_domains=dns_test_domains)
-                    
-                    # Send results immediately after each destination
-                    if dest_results:
-                        success_count = sum(1 for r in dest_results if r.get('success', False))
-                        logger.info(f"Completed {len(dest_results)} tests for {dest['name']} ({success_count} successful)")
-                        self.send_results(dest_results)
-                    else:
-                        logger.warning(f"No results for destination {dest['name']}")
+
+                max_workers = min(len(destinations), 5)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            self._run_and_send_destination, dest, dns_test_domains
+                        ): dest
+                        for dest in destinations
+                    }
+                    for fut in as_completed(futures):
+                        dest = futures[fut]
+                        try:
+                            fut.result()
+                        except Exception as exc:
+                            logger.error(
+                                f"Error testing destination {dest['name']}: {exc}",
+                                exc_info=True
+                            )
             else:
                 logger.warning("No destinations available from server")
-            
+
         except Exception as e:
             logger.error(f"Error running tests: {e}", exc_info=True)
     
