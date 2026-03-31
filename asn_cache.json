@@ -182,5 +182,21 @@
     "source": "whois",
     "is_trusted": false,
     "is_private": false
+  },
+  "142.250.75.174": {
+    "ip": "142.250.75.174",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "104.16.133.229": {
+    "ip": "104.16.133.229",
+    "asn": "13335",
+    "name": "Cloudflare, Inc.",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
   }
 }
