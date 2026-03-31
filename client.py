@@ -320,11 +320,14 @@ class NetworkClient:
             return False
     
     def fetch_destinations(self) -> list:
-        """Fetch enabled destinations from server"""
+        """Fetch enabled destinations from server (global + client-specific merged)"""
         try:
+            # Pass client_name so the server returns global + this client's destinations
+            from urllib.parse import quote
+            url = f"{self.server_url}/api/destinations?client_name={quote(self.client_name)}"
             status, response_body = self._perform_authenticated_request(
                 lambda: urllib.request.Request(
-                    f"{self.server_url}/api/destinations",
+                    url,
                     headers=self._get_auth_headers()
                 ),
                 timeout=10
