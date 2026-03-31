@@ -1,0 +1,186 @@
+{
+  "82.166.140.146": {
+    "ip": "82.166.140.146",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.143.203.57": {
+    "ip": "212.143.203.57",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.143.12.121": {
+    "ip": "212.143.12.121",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "207.232.57.143": {
+    "ip": "207.232.57.143",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.150.71.151": {
+    "ip": "212.150.71.151",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "1.1.1.1": {
+    "ip": "1.1.1.1",
+    "asn": "13335",
+    "name": "APNIC Research and Development",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.143.203.59": {
+    "ip": "212.143.203.59",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.143.12.91": {
+    "ip": "212.143.12.91",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "207.232.57.183": {
+    "ip": "207.232.57.183",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "104.16.132.229": {
+    "ip": "104.16.132.229",
+    "asn": "13335",
+    "name": "Cloudflare, Inc.",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "212.143.25.168": {
+    "ip": "212.143.25.168",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "192.178.69.74": {
+    "ip": "192.178.69.74",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "216.239.50.161": {
+    "ip": "216.239.50.161",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "142.251.240.183": {
+    "ip": "142.251.240.183",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "8.8.8.8": {
+    "ip": "8.8.8.8",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "212.143.203.29": {
+    "ip": "212.143.203.29",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "142.251.240.179": {
+    "ip": "142.251.240.179",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "142.250.75.206": {
+    "ip": "142.250.75.206",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "212.143.203.249": {
+    "ip": "212.143.203.249",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  },
+  "108.170.229.65": {
+    "ip": "108.170.229.65",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "142.251.67.29": {
+    "ip": "142.251.67.29",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "142.250.75.46": {
+    "ip": "142.250.75.46",
+    "asn": "15169",
+    "name": "Google",
+    "source": "whois",
+    "is_trusted": true,
+    "is_private": false
+  },
+  "194.90.0.1": {
+    "ip": "194.90.0.1",
+    "asn": "1680",
+    "name": "013 Netvision Network",
+    "source": "whois",
+    "is_trusted": false,
+    "is_private": false
+  }
+}
