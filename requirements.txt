@@ -1,0 +1,6 @@
+# Vane Monitor — Client dependencies
+# These are the ONLY packages needed for the client .exe build.
+# Keep this list minimal to produce a small binary.
+
+aioping>=0.4.0          # optional fast ICMP ping (fallback: subprocess)
+pyinstaller>=6.0        # build tool — not bundled into the .exe itself
