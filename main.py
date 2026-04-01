@@ -6,29 +6,52 @@ Usage:
     python -m client.main                     # from repo root
     python main.py                            # from client/ directory
     python main.py --config client_config.json
+
+When built as a single .exe the client creates its data files
+(config, logs, ASN cache) next to the executable on first run.
 """
 import sys
+import os
 from pathlib import Path
 
-# ── Guarantee the REPO ROOT is the first entry on sys.path ──────
-# This makes  `import shared.xxx`  and  `import client.xxx`  work
-# regardless of the cwd or how the script was invoked.
+
+def get_app_dir() -> Path:
+    """Return the directory where runtime data files should live.
+
+    - Frozen .exe (PyInstaller --onefile): directory containing the .exe
+    - Normal Python execution: the client/ package directory
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller --onefile extracts to a temp dir, but the .exe
+        # itself lives at sys.executable's parent.
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+# ── Make sure the repo root is importable ────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 # ─────────────────────────────────────────────────────────────────
 
+# Set the working directory to app_dir so that any library that
+# writes files relative to CWD (ASN cache, log DB, …) puts them
+# next to the executable.
+APP_DIR = get_app_dir()
+os.makedirs(APP_DIR, exist_ok=True)
+os.chdir(APP_DIR)
+
 import argparse
 import logging
 import json
-import os
 import getpass
 
 from shared.log_handler import SQLiteLogHandler
 from shared.constants import VERSION
 
 # ── Logging ──────────────────────────────────────────────────────
-_db_handler = SQLiteLogHandler("vane_monitor_log.db")
+_log_db = str(APP_DIR / "vane_monitor_log.db")
+_db_handler = SQLiteLogHandler(_log_db)
 _db_handler.setFormatter(logging.Formatter(
     "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ))
@@ -41,8 +64,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_default_config_path() -> Path:
-    """Return the canonical client config path next to this script."""
-    return Path(__file__).resolve().parent / "client_config.json"
+    """Return the canonical client config path inside app_dir."""
+    return APP_DIR / "client_config.json"
 
 
 def run_client(config_file=None):

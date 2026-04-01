@@ -6,6 +6,7 @@ import time
 import logging
 import json
 import os
+import sys
 from pathlib import Path
 import ssl
 import getpass
@@ -24,7 +25,11 @@ class NetworkClient:
     def __init__(self, config_file: Optional[str] = None, server_url: Optional[str] = None):
         """Initialize the network client"""
 
-        app_dir = Path(__file__).resolve().parent
+        # Determine the data directory: next to .exe (frozen) or client/ (dev)
+        if getattr(sys, 'frozen', False):
+            app_dir = Path(sys.executable).resolve().parent
+        else:
+            app_dir = Path(__file__).resolve().parent
         default_client_config = app_dir / 'client_config.json'
 
         # Prefer project-root client_config.json unless an explicit config file was provided.
