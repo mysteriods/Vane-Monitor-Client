@@ -93,11 +93,13 @@ class NetworkClient:
                 config_data = json.load(f)
 
             if self.is_client_config:
+                config_data['client_name'] = self.client_name
                 config_data['api_key'] = self.api_key
                 config_data.pop('client_username', None)
                 config_data.pop('client_password', None)
             else:
                 client_section = config_data.setdefault('client', {})
+                client_section['client_name'] = self.client_name
                 client_section['api_key'] = self.api_key
                 client_section.pop('username', None)
                 client_section.pop('password', None)
@@ -168,7 +170,8 @@ class NetworkClient:
         print("\n" + "=" * 60)
         print("  CLIENT AUTHENTICATION")
         print("=" * 60)
-        print("\nEnter a server user with role 'client' (or 'admin').\n")
+        print("\nEnter a server user with role 'client'.")
+        print("This username becomes the client identity used with the server.\n")
 
         while not self.client_username:
             self.client_username = input("Client username: ").strip()
@@ -211,6 +214,12 @@ class NetworkClient:
                     return False
 
                 self.api_key = api_key
+                if self.client_name != self.client_username:
+                    logger.info(
+                        "Using authenticated client identity '%s' instead of configured client name '%s'",
+                        self.client_username, self.client_name
+                    )
+                self.client_name = self.client_username
                 self.client_password = ''
                 self._save_runtime_auth_state()
                 logger.info("Successfully authenticated client and obtained API key")
