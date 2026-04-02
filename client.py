@@ -12,6 +12,13 @@ import ssl
 import getpass
 import urllib.request
 import urllib.error
+import platform
+import subprocess
+import socket
+import re
+import shutil
+import ctypes
+from datetime import datetime
 from typing import Optional
 from shared.config import Config
 from shared.monitor.network_tests import NetworkMonitor
@@ -78,6 +85,7 @@ class NetworkClient:
         self.running = False
         self.registered = False
         self.ssl_context = self._build_ssl_context()
+        self._host_info_permission_denied = False
         
         logger.info(f"Client initialized: {self.client_name}")
         logger.info(f"Server URL: {self.server_url}")
@@ -151,6 +159,465 @@ class NetworkClient:
         if self.ssl_context is not None:
             return urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context)
         return urllib.request.urlopen(request, timeout=timeout)
+
+    def _run_command(self, args, timeout: int = 5) -> str:
+        """Run a command and return stdout as text (best effort)."""
+        out = subprocess.check_output(args, stderr=subprocess.STDOUT, timeout=timeout)
+        return out.decode('utf-8', errors='ignore')
+
+    def _looks_like_permission_error(self, error_text: str) -> bool:
+        if not error_text:
+            return False
+        text = error_text.lower()
+        return (
+            'permission denied' in text or
+            'operation not permitted' in text or
+            'access is denied' in text or
+            'requires elevation' in text
+        )
+
+    def _collect_wan_ip(self) -> Optional[str]:
+        """Try to get WAN IP. Returns None if unavailable/restricted."""
+        providers = [
+            'https://api.ipify.org?format=json',
+            'https://ifconfig.me/ip'
+        ]
+        for url in providers:
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'VaneMonitor-Client/1.0'})
+                with self._open_url(req, timeout=3) as response:
+                    payload = response.read().decode('utf-8', errors='ignore').strip()
+                    if payload.startswith('{'):
+                        parsed = json.loads(payload)
+                        ip = parsed.get('ip')
+                        if ip:
+                            return ip
+                    elif payload:
+                        return payload
+            except Exception:
+                continue
+        return None
+
+    def _collect_uptime_seconds(self) -> Optional[int]:
+        """Collect host uptime in seconds (best effort)."""
+        try:
+            system = platform.system().lower()
+            if system == 'windows':
+                return int(ctypes.windll.kernel32.GetTickCount64() / 1000)
+
+            if os.path.exists('/proc/uptime'):
+                with open('/proc/uptime', 'r', encoding='utf-8', errors='ignore') as f:
+                    first = f.read().strip().split()[0]
+                    return int(float(first))
+        except Exception:
+            pass
+        return None
+
+    def _collect_memory_info(self) -> dict:
+        """Collect memory/page-file information (best effort)."""
+        info = {
+            'used_bytes': None,
+            'available_bytes': None,
+            'total_bytes': None,
+            'page_file_used_bytes': None,
+            'page_file_available_bytes': None,
+            'page_file_total_bytes': None
+        }
+
+        system = platform.system().lower()
+        if system == 'windows':
+            try:
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ('dwLength', ctypes.c_ulong),
+                        ('dwMemoryLoad', ctypes.c_ulong),
+                        ('ullTotalPhys', ctypes.c_ulonglong),
+                        ('ullAvailPhys', ctypes.c_ulonglong),
+                        ('ullTotalPageFile', ctypes.c_ulonglong),
+                        ('ullAvailPageFile', ctypes.c_ulonglong),
+                        ('ullTotalVirtual', ctypes.c_ulonglong),
+                        ('ullAvailVirtual', ctypes.c_ulonglong),
+                        ('ullAvailExtendedVirtual', ctypes.c_ulonglong),
+                    ]
+
+                stat = MEMORYSTATUSEX()
+                stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+                ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+                if ok:
+                    info['total_bytes'] = int(stat.ullTotalPhys)
+                    info['available_bytes'] = int(stat.ullAvailPhys)
+                    info['used_bytes'] = int(stat.ullTotalPhys - stat.ullAvailPhys)
+                    info['page_file_total_bytes'] = int(stat.ullTotalPageFile)
+                    info['page_file_available_bytes'] = int(stat.ullAvailPageFile)
+                    info['page_file_used_bytes'] = int(stat.ullTotalPageFile - stat.ullAvailPageFile)
+                    return info
+            except Exception:
+                return info
+
+        # Linux fallback using /proc/meminfo
+        try:
+            mem = {}
+            if os.path.exists('/proc/meminfo'):
+                with open('/proc/meminfo', 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        if ':' not in line:
+                            continue
+                        k, v = line.split(':', 1)
+                        parts = v.strip().split()
+                        if parts and parts[0].isdigit():
+                            mem[k.strip()] = int(parts[0]) * 1024  # kB -> bytes
+
+                total = mem.get('MemTotal')
+                available = mem.get('MemAvailable')
+                if total is not None and available is not None:
+                    info['total_bytes'] = total
+                    info['available_bytes'] = available
+                    info['used_bytes'] = total - available
+
+                swap_total = mem.get('SwapTotal')
+                swap_free = mem.get('SwapFree')
+                if swap_total is not None and swap_free is not None:
+                    info['page_file_total_bytes'] = swap_total
+                    info['page_file_available_bytes'] = swap_free
+                    info['page_file_used_bytes'] = swap_total - swap_free
+        except Exception:
+            pass
+
+        return info
+
+    def _collect_main_drive_info(self) -> dict:
+        """Collect main/system drive usage (best effort)."""
+        info = {
+            'mount': None,
+            'used_bytes': None,
+            'total_bytes': None,
+            'available_bytes': None
+        }
+        try:
+            system = platform.system().lower()
+            if system == 'windows':
+                mount = os.environ.get('SystemDrive', 'C:') + '\\'
+            else:
+                mount = '/'
+
+            total, used, free = shutil.disk_usage(mount)
+            info['mount'] = mount
+            info['used_bytes'] = int(used)
+            info['total_bytes'] = int(total)
+            info['available_bytes'] = int(free)
+        except Exception:
+            pass
+        return info
+
+    def _collect_windows_host_info(self) -> dict:
+        interfaces = {}
+        routes = []
+
+        try:
+            text = self._run_command(['netsh', 'interface', 'show', 'interface'])
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith('Admin') or line.startswith('-'):
+                    continue
+                parts = re.split(r'\s{2,}', line)
+                if len(parts) >= 4:
+                    iface_name = parts[3].strip()
+                    iface_type = parts[2].strip().lower()
+                    interfaces.setdefault(iface_name, {
+                        'name': iface_name,
+                        'type': 'wireless' if 'wireless' in iface_type else 'wired',
+                        'speed_mbps': None,
+                        'signal_strength': None,
+                        'ipv4': [],
+                        'ipv6': []
+                    })
+        except Exception as e:
+            if self._looks_like_permission_error(str(e)):
+                raise PermissionError(str(e))
+
+        # IP addresses
+        try:
+            text = self._run_command(['ipconfig'])
+            current = None
+            for raw in text.splitlines():
+                line = raw.rstrip()
+                if line and not line.startswith(' ') and ':' in line:
+                    header = line.strip().rstrip(':')
+                    if 'adapter' in header.lower():
+                        current = header.split('adapter', 1)[-1].strip()
+                        interfaces.setdefault(current, {
+                            'name': current,
+                            'type': 'unknown',
+                            'speed_mbps': None,
+                            'signal_strength': None,
+                            'ipv4': [],
+                            'ipv6': []
+                        })
+                    continue
+
+                if not current:
+                    continue
+                l = line.strip()
+                if l.lower().startswith('ipv4') and ':' in l:
+                    ip = l.split(':', 1)[1].strip().split('(')[0].strip()
+                    if ip and ip not in interfaces[current]['ipv4']:
+                        interfaces[current]['ipv4'].append(ip)
+                elif l.lower().startswith('ipv6') and ':' in l:
+                    ip = l.split(':', 1)[1].strip()
+                    if ip and ip not in interfaces[current]['ipv6']:
+                        interfaces[current]['ipv6'].append(ip)
+        except Exception:
+            pass
+
+        # Link speed and connection type details via PowerShell (best effort)
+        try:
+            ps = "Get-NetAdapter | Select-Object Name, InterfaceDescription, LinkSpeed, NdisPhysicalMedium | ConvertTo-Json -Compress"
+            text = self._run_command(['powershell', '-NoProfile', '-Command', ps], timeout=8)
+            adapters = json.loads(text) if text else []
+            if isinstance(adapters, dict):
+                adapters = [adapters]
+            for ad in adapters:
+                name = ad.get('Name')
+                if not name:
+                    continue
+                info = interfaces.setdefault(name, {
+                    'name': name,
+                    'type': 'unknown',
+                    'speed_mbps': None,
+                    'signal_strength': None,
+                    'ipv4': [],
+                    'ipv6': []
+                })
+                medium = str(ad.get('NdisPhysicalMedium', '')).lower()
+                if 'wireless' in medium:
+                    info['type'] = 'wireless'
+                elif '802.3' in medium or 'ethernet' in medium:
+                    info['type'] = 'wired'
+                link_speed = str(ad.get('LinkSpeed', '')).strip()
+                m = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*([GMK]?)bps', link_speed, re.IGNORECASE)
+                if m:
+                    value = float(m.group(1))
+                    unit = m.group(2).upper()
+                    if unit == 'G':
+                        info['speed_mbps'] = round(value * 1000, 2)
+                    elif unit == 'K':
+                        info['speed_mbps'] = round(value / 1000, 3)
+                    else:
+                        info['speed_mbps'] = round(value, 2)
+        except Exception:
+            pass
+
+        # Wireless signal (best effort)
+        try:
+            wlan = self._run_command(['netsh', 'wlan', 'show', 'interfaces'])
+            current = None
+            for raw in wlan.splitlines():
+                line = raw.strip()
+                if line.lower().startswith('name') and ':' in line:
+                    current = line.split(':', 1)[1].strip()
+                    interfaces.setdefault(current, {
+                        'name': current,
+                        'type': 'wireless',
+                        'speed_mbps': None,
+                        'signal_strength': None,
+                        'ipv4': [],
+                        'ipv6': []
+                    })
+                    interfaces[current]['type'] = 'wireless'
+                elif current and line.lower().startswith('signal') and ':' in line:
+                    interfaces[current]['signal_strength'] = line.split(':', 1)[1].strip()
+        except Exception:
+            pass
+
+        # Routes
+        try:
+            text = self._run_command(['route', 'print', '-4'])
+            in_ipv4_table = False
+            for raw in text.splitlines():
+                line = raw.strip()
+                if line.startswith('IPv4 Route Table'):
+                    in_ipv4_table = True
+                if in_ipv4_table and re.match(r'^\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+\s+\d+\.\d+\.\d+\.\d+', line):
+                    parts = re.split(r'\s+', line)
+                    if len(parts) >= 4:
+                        routes.append({
+                            'destination': parts[0],
+                            'mask': parts[1],
+                            'gateway': parts[2],
+                            'interface_ip': parts[3],
+                            'metric': parts[4] if len(parts) > 4 else None
+                        })
+        except Exception:
+            pass
+
+        return {
+            'interfaces': list(interfaces.values()),
+            'routes': routes
+        }
+
+    def _collect_linux_host_info(self) -> dict:
+        interfaces = {}
+        routes = []
+
+        try:
+            text = self._run_command(['ip', '-o', 'link', 'show'])
+            for raw in text.splitlines():
+                m = re.match(r'^\d+:\s+([^:]+):', raw)
+                if not m:
+                    continue
+                name = m.group(1).split('@')[0]
+                interfaces[name] = {
+                    'name': name,
+                    'type': 'wireless' if name.startswith('wl') else 'wired',
+                    'speed_mbps': None,
+                    'signal_strength': None,
+                    'ipv4': [],
+                    'ipv6': []
+                }
+        except Exception as e:
+            if self._looks_like_permission_error(str(e)):
+                raise PermissionError(str(e))
+
+        # IP addresses
+        try:
+            text4 = self._run_command(['ip', '-o', '-4', 'addr', 'show'])
+            for raw in text4.splitlines():
+                parts = raw.split()
+                if len(parts) >= 4:
+                    name = parts[1]
+                    ip = parts[3]
+                    interfaces.setdefault(name, {'name': name, 'type': 'unknown', 'speed_mbps': None, 'signal_strength': None, 'ipv4': [], 'ipv6': []})
+                    interfaces[name]['ipv4'].append(ip)
+        except Exception:
+            pass
+
+        try:
+            text6 = self._run_command(['ip', '-o', '-6', 'addr', 'show'])
+            for raw in text6.splitlines():
+                parts = raw.split()
+                if len(parts) >= 4:
+                    name = parts[1]
+                    ip = parts[3]
+                    interfaces.setdefault(name, {'name': name, 'type': 'unknown', 'speed_mbps': None, 'signal_strength': None, 'ipv4': [], 'ipv6': []})
+                    interfaces[name]['ipv6'].append(ip)
+        except Exception:
+            pass
+
+        # Interface speed from sysfs (best effort)
+        for name, info in interfaces.items():
+            speed_file = f'/sys/class/net/{name}/speed'
+            try:
+                if os.path.exists(speed_file):
+                    with open(speed_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        raw = f.read().strip()
+                        if raw.isdigit() and int(raw) > 0:
+                            info['speed_mbps'] = int(raw)
+            except Exception as e:
+                if self._looks_like_permission_error(str(e)):
+                    raise PermissionError(str(e))
+
+        # Wireless signal from /proc/net/wireless (best effort)
+        try:
+            if os.path.exists('/proc/net/wireless'):
+                with open('/proc/net/wireless', 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()[2:]
+                    for line in lines:
+                        if ':' not in line:
+                            continue
+                        iface, rest = line.split(':', 1)
+                        iface = iface.strip()
+                        parts = rest.split()
+                        if len(parts) >= 3:
+                            quality = parts[1].strip('.')
+                            interfaces.setdefault(iface, {'name': iface, 'type': 'wireless', 'speed_mbps': None, 'signal_strength': None, 'ipv4': [], 'ipv6': []})
+                            interfaces[iface]['type'] = 'wireless'
+                            interfaces[iface]['signal_strength'] = f'{quality}/70'
+        except Exception:
+            pass
+
+        # Routes
+        try:
+            text = self._run_command(['ip', 'route', 'show'])
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                route = {'raw': line}
+                m_dst = re.match(r'^(default|[0-9./]+)', line)
+                if m_dst:
+                    route['destination'] = m_dst.group(1)
+                m_via = re.search(r'\svia\s+([^\s]+)', line)
+                if m_via:
+                    route['gateway'] = m_via.group(1)
+                m_dev = re.search(r'\sdev\s+([^\s]+)', line)
+                if m_dev:
+                    route['interface'] = m_dev.group(1)
+                routes.append(route)
+        except Exception:
+            pass
+
+        return {
+            'interfaces': list(interfaces.values()),
+            'routes': routes
+        }
+
+    def collect_host_network_info(self) -> Optional[dict]:
+        """Collect host network information once per test cycle.
+
+        If collection fails due to permissions, disable further attempts until restart.
+        """
+        if self._host_info_permission_denied:
+            return None
+
+        snapshot = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'platform': platform.system(),
+            'hostname': socket.gethostname(),
+            'uptime_sec': None,
+            'memory': {
+                'used_bytes': None,
+                'available_bytes': None,
+                'total_bytes': None,
+                'page_file_used_bytes': None,
+                'page_file_available_bytes': None,
+                'page_file_total_bytes': None
+            },
+            'main_drive': {
+                'mount': None,
+                'used_bytes': None,
+                'total_bytes': None,
+                'available_bytes': None
+            },
+            'interfaces': [],
+            'routes': [],
+            'wan_ip': None
+        }
+
+        try:
+            system = platform.system().lower()
+            if system == 'windows':
+                data = self._collect_windows_host_info()
+            else:
+                data = self._collect_linux_host_info()
+
+            snapshot['interfaces'] = data.get('interfaces', [])
+            snapshot['routes'] = data.get('routes', [])
+            snapshot['wan_ip'] = self._collect_wan_ip()
+            snapshot['uptime_sec'] = self._collect_uptime_seconds()
+            snapshot['memory'] = self._collect_memory_info()
+            snapshot['main_drive'] = self._collect_main_drive_info()
+            return snapshot
+        except PermissionError as e:
+            logger.warning(f"Host network info collection disabled until restart (permission issue): {e}")
+            self._host_info_permission_denied = True
+            return None
+        except Exception as e:
+            if self._looks_like_permission_error(str(e)):
+                logger.warning(f"Host network info collection disabled until restart (permission issue): {e}")
+                self._host_info_permission_denied = True
+                return None
+            logger.debug(f"Host network info collection failed for this cycle: {e}")
+            return None
 
     def _get_auth_headers(self) -> dict:
         """Build default headers for authenticated client requests."""
@@ -294,12 +761,19 @@ class NetworkClient:
             logger.error(f"Error during registration: {e}")
             return False
     
-    def send_results(self, results: list) -> bool:
+    def send_results(self, results: list, host_network_info: Optional[dict] = None) -> bool:
         """Send test results to server"""
         try:
+            payload_results = []
+            for r in results:
+                item = dict(r)
+                if host_network_info and 'host_network_info' not in item:
+                    item['host_network_info'] = host_network_info
+                payload_results.append(item)
+
             data = {
                 'client_id': self.client_name,  # Server still uses 'client_id' field
-                'results': results
+                'results': payload_results
             }
             
             json_data = json.dumps(data).encode('utf-8')
@@ -461,6 +935,8 @@ class NetworkClient:
         logger.info("Running network tests...")
         
         try:
+            host_network_info = self.collect_host_network_info()
+
             # Try to fetch destinations from server
             destinations = self.fetch_destinations()
             
@@ -478,7 +954,7 @@ class NetworkClient:
                     if dest_results:
                         success_count = sum(1 for r in dest_results if r.get('success', False))
                         logger.info(f"Completed {len(dest_results)} tests for {dest['name']} ({success_count} successful)")
-                        self.send_results(dest_results)
+                        self.send_results(dest_results, host_network_info=host_network_info)
                     else:
                         logger.warning(f"No results for destination {dest['name']}")
             else:
