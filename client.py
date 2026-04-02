@@ -769,6 +769,12 @@ class NetworkClient:
                 item = dict(r)
                 if host_network_info and 'host_network_info' not in item:
                     item['host_network_info'] = host_network_info
+
+                rd = item.get('result_data')
+                if host_network_info and isinstance(rd, dict) and 'host_network_info' not in rd:
+                    rd = dict(rd)
+                    rd['host_network_info'] = host_network_info
+                    item['result_data'] = rd
                 payload_results.append(item)
 
             data = {
