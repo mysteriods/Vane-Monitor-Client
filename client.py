@@ -61,6 +61,9 @@ class NetworkClient:
                 self.client_username = client_config.get('client_username', '')
                 self.client_password = client_config.get('client_password', '')
                 self.api_key = client_config.get('api_key', '')
+                self.enable_l4s_testing = client_config.get('enable_l4s_testing', True)
+                self.l4s_target = client_config.get('l4s_target', '1.1.1.1')
+                self.l4s_interval = int(client_config.get('l4s_interval', 600))
             except Exception as e:
                 logger.error(f"Error loading client_config.json: {e}")
                 raise
@@ -80,12 +83,16 @@ class NetworkClient:
             self.client_username = self.config.get('client', 'username', default='')
             self.client_password = self.config.get('client', 'password', default='')
             self.api_key = self.config.get('client', 'api_key', default='')
+            self.enable_l4s_testing = self.config.get('client', 'enable_l4s_testing', default=True)
+            self.l4s_target = self.config.get('client', 'l4s_target', default='1.1.1.1')
+            self.l4s_interval = int(self.config.get('client', 'l4s_interval', default=600))
         
         self.monitor = NetworkMonitor()
         self.running = False
         self.registered = False
         self.ssl_context = self._build_ssl_context()
         self._host_info_permission_denied = False
+        self._last_l4s_run: float = 0.0  # epoch seconds; 0 = never run
         
         logger.info(f"Client initialized: {self.client_name}")
         logger.info(f"Server URL: {self.server_url}")
@@ -939,23 +946,23 @@ class NetworkClient:
     def run_tests(self):
         """Run all configured network tests"""
         logger.info("Running network tests...")
-        
+
         try:
             host_network_info = self.collect_host_network_info()
 
             # Try to fetch destinations from server
             destinations = self.fetch_destinations()
-            
+
             if destinations:
                 # Fetch DNS test domains once for all destinations
                 dns_test_domains = self.fetch_dns_test_domains()
-                
+
                 # Test each destination and send results immediately
                 for dest in destinations:
                     logger.info(f"Testing destination: {dest['name']} ({dest['target']})")
-                    
+
                     dest_results = self.run_destination_tests(dest, dns_test_domains=dns_test_domains)
-                    
+
                     # Send results immediately after each destination
                     if dest_results:
                         success_count = sum(1 for r in dest_results if r.get('success', False))
@@ -965,9 +972,38 @@ class NetworkClient:
                         logger.warning(f"No results for destination {dest['name']}")
             else:
                 logger.warning("No destinations available from server")
-            
+
+            # L4S probe — runs at most once every l4s_interval seconds (default 10 min).
+            # Excluded from the destinations loop because it saturates the link
+            # for ~10 seconds; running it per-destination would skew RTT results.
+            if self.enable_l4s_testing:
+                now = time.time()
+                if now - self._last_l4s_run >= self.l4s_interval:
+                    self._run_l4s_probe_cycle(host_network_info)
+                    self._last_l4s_run = now
+                else:
+                    remaining = int(self.l4s_interval - (now - self._last_l4s_run))
+                    logger.debug(f"L4S probe skipped — next run in {remaining}s")
+
         except Exception as e:
             logger.error(f"Error running tests: {e}", exc_info=True)
+
+    def _run_l4s_probe_cycle(self, host_network_info: Optional[dict]) -> None:
+        """Run the L4S / ECN responsiveness probe and submit the result."""
+        try:
+            from client.l4s_probe import run_l4s_probe  # noqa: deferred import
+            logger.info(f"Running L4S probe against {self.l4s_target}...")
+            result = run_l4s_probe(target_host=self.l4s_target)
+            logger.info(
+                "L4S probe: supported=%s ecn=%s rpm=%s working_lat=%sms",
+                result.get("l4s_supported"),
+                result.get("ecn_path_status"),
+                result.get("rpm_score"),
+                result.get("working_latency_ms"),
+            )
+            self.send_results([result], host_network_info=host_network_info)
+        except Exception as e:
+            logger.error(f"L4S probe failed: {e}", exc_info=True)
     
     def start(self):
         """Start the client with scheduled testing"""
