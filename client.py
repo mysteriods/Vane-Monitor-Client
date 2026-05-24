@@ -19,9 +19,10 @@ import re
 import shutil
 import ctypes
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 from shared.config import Config
 from shared.monitor.network_tests import NetworkMonitor
+from client.offline_queue import PendingSubmissionStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class NetworkClient:
             app_dir = Path(sys.executable).resolve().parent
         else:
             app_dir = Path(__file__).resolve().parent
+        self.app_dir = app_dir
         default_client_config = app_dir / 'client_config.json'
 
         # Prefer project-root client_config.json unless an explicit config file was provided.
@@ -93,6 +95,9 @@ class NetworkClient:
         self.ssl_context = self._build_ssl_context()
         self._host_info_permission_denied = False
         self._last_l4s_run: float = 0.0  # epoch seconds; 0 = never run
+        self._active_run_serial: Optional[int] = None
+        self._active_run_started_at: Optional[str] = None
+        self.pending_submission_store = PendingSubmissionStore(app_dir / 'pending_results.db')
         
         logger.info(f"Client initialized: {self.client_name}")
         logger.info(f"Server URL: {self.server_url}")
@@ -153,6 +158,123 @@ class NetworkClient:
                     raise
 
         raise RuntimeError("Authenticated request failed unexpectedly")
+
+    @staticmethod
+    def _build_run_serial(loop_started_at: datetime) -> int:
+        """Build a monotonic, time-derived serial for a test loop."""
+        return int(loop_started_at.timestamp() * 1000)
+
+    def _prepare_submission_payload(self, results: list, host_network_info: Optional[dict] = None,
+                                    run_serial: Optional[int] = None,
+                                    run_started_at: Optional[str] = None) -> Dict[str, Any]:
+        payload_results = []
+        for raw_result in results:
+            item = dict(raw_result)
+
+            if run_serial is not None:
+                item['run_serial'] = run_serial
+            if run_started_at:
+                item['run_started_at'] = run_started_at
+            if host_network_info and 'host_network_info' not in item:
+                item['host_network_info'] = host_network_info
+
+            rd = item.get('result_data')
+            if isinstance(rd, dict):
+                rd = dict(rd)
+                if host_network_info and 'host_network_info' not in rd:
+                    rd['host_network_info'] = host_network_info
+                if run_serial is not None:
+                    rd['run_serial'] = run_serial
+                if run_started_at:
+                    rd['run_started_at'] = run_started_at
+                item['result_data'] = rd
+            elif rd is None and (host_network_info or run_serial is not None or run_started_at):
+                rd = {}
+                if host_network_info:
+                    rd['host_network_info'] = host_network_info
+                if run_serial is not None:
+                    rd['run_serial'] = run_serial
+                if run_started_at:
+                    rd['run_started_at'] = run_started_at
+                item['result_data'] = rd
+
+            payload_results.append(item)
+
+        return {
+            'client_id': self.client_name,
+            'results': payload_results
+        }
+
+    def _submit_payload(self, payload: Dict[str, Any], timeout: int = 10) -> bool:
+        json_data = json.dumps(payload).encode('utf-8')
+
+        status, _ = self._perform_authenticated_request(
+            lambda: urllib.request.Request(
+                f"{self.server_url}/api/submit",
+                data=json_data,
+                headers={
+                    'Content-Type': 'application/json',
+                    **self._get_auth_headers()
+                },
+                method='POST'
+            ),
+            timeout=timeout
+        )
+        if status == 200:
+            logger.info(
+                "Successfully sent %s test result(s) to server",
+                len(payload.get('results', []))
+            )
+            return True
+
+        logger.error(f"Server responded with status: {status}")
+        return False
+
+    def _queue_submission(self, payload: Dict[str, Any]) -> None:
+        first_result = payload.get('results', [{}])[0] if payload.get('results') else {}
+        run_serial = first_result.get('run_serial')
+        self.pending_submission_store.enqueue(
+            client_id=payload.get('client_id', self.client_name),
+            run_serial=run_serial,
+            payload=payload,
+        )
+
+    def _flush_pending_submissions(self) -> bool:
+        if not self.pending_submission_store.has_pending():
+            return True
+
+        pending_count = self.pending_submission_store.count_pending()
+        logger.info("Attempting to replay %s queued submission(s)", pending_count)
+
+        while True:
+            pending_items = self.pending_submission_store.list_pending(limit=1)
+            if not pending_items:
+                return True
+
+            item = pending_items[0]
+            try:
+                if self._submit_payload(item['payload']):
+                    self.pending_submission_store.delete(item['id'])
+                    logger.info(
+                        "Replayed queued submission %s (run_serial=%s)",
+                        item['id'],
+                        item.get('run_serial')
+                    )
+                    continue
+
+                error_text = 'Server rejected queued submission'
+            except urllib.error.HTTPError as e:
+                error_text = f"HTTP error while replaying queued submission: {e}"
+                logger.warning(error_text)
+            except urllib.error.URLError as e:
+                error_text = f"Server still unavailable while replaying queued submission: {e}"
+                logger.warning(error_text)
+            except Exception as e:
+                error_text = f"Unexpected error while replaying queued submission: {e}"
+                logger.warning(error_text)
+
+            self.pending_submission_store.mark_attempt(item['id'], error_text)
+            return False
 
     def _build_ssl_context(self):
         """Build urllib SSL context based on client verification settings."""
@@ -770,54 +892,41 @@ class NetworkClient:
     
     def send_results(self, results: list, host_network_info: Optional[dict] = None) -> bool:
         """Send test results to server"""
+        if not results:
+            return True
+
+        payload: Optional[Dict[str, Any]] = None
         try:
-            payload_results = []
-            for r in results:
-                item = dict(r)
-                if host_network_info and 'host_network_info' not in item:
-                    item['host_network_info'] = host_network_info
-
-                rd = item.get('result_data')
-                if host_network_info and isinstance(rd, dict) and 'host_network_info' not in rd:
-                    rd = dict(rd)
-                    rd['host_network_info'] = host_network_info
-                    item['result_data'] = rd
-                payload_results.append(item)
-
-            data = {
-                'client_id': self.client_name,  # Server still uses 'client_id' field
-                'results': payload_results
-            }
-            
-            json_data = json.dumps(data).encode('utf-8')
-            
-            status, _ = self._perform_authenticated_request(
-                lambda: urllib.request.Request(
-                    f"{self.server_url}/api/submit",
-                    data=json_data,
-                    headers={
-                        'Content-Type': 'application/json',
-                        **self._get_auth_headers()
-                    },
-                    method='POST'
-                ),
-                timeout=10
+            payload = self._prepare_submission_payload(
+                results,
+                host_network_info=host_network_info,
+                run_serial=self._active_run_serial,
+                run_started_at=self._active_run_started_at,
             )
-            if status == 200:
-                logger.info(f"Successfully sent {len(results)} test results to server")
+
+            if not self._flush_pending_submissions():
+                self._queue_submission(payload)
+                return False
+
+            if self._submit_payload(payload):
                 return True
 
-            logger.error(f"Server responded with status: {status}")
+            self._queue_submission(payload)
             return False
-                    
         except urllib.error.HTTPError as e:
-            logger.error(f"Server rejected result submission: {e}")
+            logger.warning(f"Server rejected result submission: {e}")
+            if payload is not None and e.code >= 500:
+                self._queue_submission(payload)
             return False
         except urllib.error.URLError as e:
-            logger.error(f"Failed to send results to server: {e}")
+            logger.warning(f"Failed to send results to server: {e}")
+            if payload is not None:
+                self._queue_submission(payload)
             return False
         except Exception as e:
-            logger.error(f"Error sending results: {e}")
+            logger.warning(f"Error sending results: {e}")
+            if payload is not None:
+                self._queue_submission(payload)
             return False
     
     def fetch_destinations(self) -> list:
@@ -948,6 +1057,13 @@ class NetworkClient:
         logger.info("Running network tests...")
 
         try:
+            loop_started_at = datetime.utcnow()
+            self._active_run_started_at = loop_started_at.isoformat()
+            self._active_run_serial = self._build_run_serial(loop_started_at)
+            logger.info("Starting test loop run_serial=%s", self._active_run_serial)
+
+            self._flush_pending_submissions()
+
             host_network_info = self.collect_host_network_info()
 
             # Try to fetch destinations from server
@@ -987,6 +1103,9 @@ class NetworkClient:
 
         except Exception as e:
             logger.error(f"Error running tests: {e}", exc_info=True)
+        finally:
+            self._active_run_serial = None
+            self._active_run_started_at = None
 
     def _run_l4s_probe_cycle(self, host_network_info: Optional[dict]) -> None:
         """Run the L4S / ECN responsiveness probe and submit the result."""
