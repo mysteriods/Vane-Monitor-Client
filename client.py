@@ -19,7 +19,7 @@ import re
 import shutil
 import ctypes
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from shared.config import Config
 from shared.monitor.network_tests import NetworkMonitor
 from client.offline_queue import PendingSubmissionStore
@@ -438,6 +438,16 @@ class NetworkClient:
             pass
         return info
 
+    def _filter_addressed_interfaces(self, interfaces: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep only interfaces that have at least one IPv4 or IPv6 address."""
+        filtered_interfaces = []
+        for info in interfaces.values():
+            ipv4_addresses = info.get('ipv4') or []
+            ipv6_addresses = info.get('ipv6') or []
+            if ipv4_addresses or ipv6_addresses:
+                filtered_interfaces.append(info)
+        return filtered_interfaces
+
     def _collect_windows_host_info(self) -> dict:
         interfaces = {}
         routes = []
@@ -580,7 +590,7 @@ class NetworkClient:
             pass
 
         return {
-            'interfaces': list(interfaces.values()),
+            'interfaces': self._filter_addressed_interfaces(interfaces),
             'routes': routes
         }
 
@@ -686,7 +696,7 @@ class NetworkClient:
             pass
 
         return {
-            'interfaces': list(interfaces.values()),
+            'interfaces': self._filter_addressed_interfaces(interfaces),
             'routes': routes
         }
 
