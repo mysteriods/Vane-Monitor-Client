@@ -98,7 +98,10 @@ def run_client(config_file=None):
     if needs_setup:
         _interactive_setup(resolved)
 
-    from client.client import NetworkClient          # noqa: deferred
+    try:
+        from client.client import NetworkClient  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        from client import NetworkClient
     client = NetworkClient(resolved)
     client.start()
 

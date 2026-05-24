@@ -22,7 +22,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from shared.config import Config
 from shared.monitor.network_tests import NetworkMonitor
-from client.offline_queue import PendingSubmissionStore
+
+try:
+    from client.offline_queue import PendingSubmissionStore  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    from offline_queue import PendingSubmissionStore
 
 logger = logging.getLogger(__name__)
 
@@ -1120,7 +1124,10 @@ class NetworkClient:
     def _run_l4s_probe_cycle(self, host_network_info: Optional[dict]) -> None:
         """Run the L4S / ECN responsiveness probe and submit the result."""
         try:
-            from client.l4s_probe import run_l4s_probe  # noqa: deferred import
+            try:
+                from client.l4s_probe import run_l4s_probe  # type: ignore[import-not-found]
+            except ModuleNotFoundError:
+                from l4s_probe import run_l4s_probe
             logger.info(f"Running L4S probe against {self.l4s_target}...")
             result = run_l4s_probe(target_host=self.l4s_target)
             logger.info(
