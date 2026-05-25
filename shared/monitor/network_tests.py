@@ -491,6 +491,58 @@ class NetworkMonitor:
                 'error': str(e),
             }
 
+    def port_scan_test(self, target: str, ports: List[int], timeout: int = 2) -> Dict[str, Any]:
+        """Test if specific ports are open on target."""
+        logger.info(f"Scanning ports {ports} on {target}...")
+
+        def _check_port(port: int):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                start = time.time()
+                err = sock.connect_ex((target, port))
+                elapsed = time.time() - start
+                sock.close()
+                return ('open', port, elapsed) if err == 0 else ('closed', port, elapsed)
+            except Exception as exc:
+                logger.debug(f"Error scanning port {port}: {exc}")
+                return ('closed', port, 0.0)
+
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            open_ports = []
+            closed_ports = []
+            max_workers = min(len(ports), 50)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_check_port, p): p for p in ports}
+                for fut in as_completed(futures):
+                    status, port, elapsed = fut.result()
+                    if status == 'open':
+                        open_ports.append({'port': port, 'response_time_sec': round(elapsed, 3)})
+                    else:
+                        closed_ports.append(port)
+
+            return {
+                'test_type': 'port_scan',
+                'target': target,
+                'timestamp': datetime.utcnow().isoformat(),
+                'success': True,
+                'ports_tested': len(ports),
+                'open_ports': open_ports,
+                'closed_ports': closed_ports,
+                'open_count': len(open_ports),
+            }
+        except Exception as e:
+            logger.error(f"Port scan to {target} failed: {e}")
+            return {
+                'test_type': 'port_scan',
+                'target': target,
+                'timestamp': datetime.utcnow().isoformat(),
+                'success': False,
+                'error': str(e),
+            }
+
     def run_test(self, test_type: str, target: str, **kwargs) -> Dict[str, Any]:
         if test_type == 'ping':
             return self.ping_test(target, **kwargs)
@@ -502,6 +554,8 @@ class NetworkMonitor:
             return self.traceroute_test(target, **kwargs)
         if test_type == 'jitter':
             return self.jitter_test(target, **kwargs)
+        if test_type == 'port_scan':
+            return self.port_scan_test(target, **kwargs)
 
         return {
             'test_type': test_type,
