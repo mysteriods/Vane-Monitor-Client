@@ -351,44 +351,48 @@ class NetworkMonitor:
 
             hops = []
             parsed_hops = []
-            if result.returncode == 0 or output:
-                for line in output.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
+            for line in output.split('\n'):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if not re.match(r'^\d+\s+', stripped):
+                    continue
 
-                    hops.append(line)
+                hops.append(stripped)
 
-                    hop_match = re.match(r'^(\d+)\s+(.*)$', line)
-                    if not hop_match:
-                        continue
+                hop_match = re.match(r'^(\d+)\s+', stripped)
+                hop_num = int(hop_match.group(1)) if hop_match else len(hops)
+                routers = list(dict.fromkeys(re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', stripped)))
 
-                    hop_num = int(hop_match.group(1))
-                    remainder = hop_match.group(2)
-                    routers = []
+                parsed_hops.append({
+                    'hop': hop_num,
+                    'raw': stripped,
+                    'routers': routers,
+                    'router_count': len(routers),
+                    'load_balanced': len(routers) > 1,
+                    'timed_out': ('*' in stripped and len(routers) == 0),
+                })
 
-                    for ip_match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3})', remainder):
-                        routers.append(ip_match.group(1))
+            has_hops = len(hops) > 0
+            output_lower = output.lower()
+            trace_completed = 'trace complete' in output_lower or ('reached' in output_lower and 'hops' in output_lower)
+            partial_path = has_hops and not trace_completed
 
-                    if not routers and '*' in remainder:
-                        parsed_hops.append({'hop': hop_num, 'routers': [], 'timed_out': True})
-                        continue
+            route_signature = self._build_route_signature(parsed_hops)
+            asn_enriched_hops = []
+            if self.asn_lookup:
+                for hop in parsed_hops:
+                    enriched = dict(hop)
+                    enriched['asn_info'] = self.asn_lookup.enrich_routers(hop.get('routers', []))
+                    asn_enriched_hops.append(enriched)
 
-                    parsed_hops.append({'hop': hop_num, 'routers': routers, 'timed_out': False})
-
-                route_signature = self._build_route_signature(parsed_hops)
-                asn_enriched_hops = []
-                if self.asn_lookup:
-                    for hop in parsed_hops:
-                        enriched = dict(hop)
-                        enriched['asn_info'] = self.asn_lookup.enrich_routers(hop.get('routers', []))
-                        asn_enriched_hops.append(enriched)
-
+            if has_hops:
                 return {
                     'test_type': 'traceroute',
                     'target': target,
                     'timestamp': datetime.utcnow().isoformat(),
                     'success': True,
+                    'partial_path': partial_path,
                     'hops': hops,
                     'hop_count': len(hops),
                     'duration_sec': round(end_time - start_time, 2),
@@ -402,7 +406,7 @@ class NetworkMonitor:
                 'target': target,
                 'timestamp': datetime.utcnow().isoformat(),
                 'success': False,
-                'error': 'Traceroute failed',
+                'error': 'Traceroute produced no output',
             }
         except Exception as exc:
             logger.error('Traceroute to %s failed: %s', target, exc)
