@@ -39,15 +39,15 @@ Recommended:
 Replace the URL below with your public client repository URL:
 
 ```bash
-git clone https://github.com/your-org/your-client-repo.git
-cd your-client-repo/client
+git clone https://github.com/mysteriods/Vane-Monitor-Client.git
+cd Vane-Monitor-Client/client
 ```
 
 If this directory is the repository root in your public repo, use:
 
 ```bash
-git clone https://github.com/your-org/your-client-repo.git
-cd your-client-repo
+git clone https://github.com/mysteriods/Vane-Monitor-Client.git
+cd Vane-Monitor-Client
 ```
 
 ### 2. Create a virtual environment
@@ -209,27 +209,84 @@ python main.py --version
 
 ## Building a Standalone Executable
 
-You can package the client into a distributable binary with PyInstaller.
+You can package the client into a single distributable binary using PyInstaller. The output executable has no Python dependency — copy it to any compatible machine and run it directly.
 
-From this `client` directory:
+> **Note:** Build on the same OS and architecture as your target machine. A Windows build will not run on Linux, and vice versa.
+
+### Prerequisites
+
+Make sure PyInstaller is installed (it is included in `requirements.txt`):
 
 ```bash
-pyinstaller VaneMonitorClient.spec
+pip install -r requirements.txt
 ```
 
-If you are using the monorepo build scripts from the repository root instead, use:
+### Build on Windows (produces `.exe`)
 
-Windows PowerShell:
+Using the included build script (from the repo root):
 
 ```powershell
 .\scripts\build_client.ps1
 ```
 
-Linux / macOS:
+Or manually from this directory:
+
+```powershell
+pyinstaller VaneMonitorClient.spec
+```
+
+The executable is written to:
+
+```
+dist\VaneMonitorClient\VaneMonitorClient.exe
+```
+
+To run it on any Windows machine (no Python needed):
+
+```powershell
+.\dist\VaneMonitorClient\VaneMonitorClient.exe
+```
+
+### Build on Linux (produces a native binary)
+
+Activate your venv first:
 
 ```bash
-bash scripts/build_client.sh
+source venv/bin/activate
 ```
+
+Then build:
+
+```bash
+pyinstaller VaneMonitorClient.spec
+```
+
+The binary is written to:
+
+```
+dist/VaneMonitorClient/VaneMonitorClient
+```
+
+Make it executable and run it:
+
+```bash
+chmod +x dist/VaneMonitorClient/VaneMonitorClient
+./dist/VaneMonitorClient/VaneMonitorClient
+```
+
+To distribute to another Linux machine, copy the entire `dist/VaneMonitorClient/` folder (not just the binary — it depends on files in that directory).
+
+### Build output structure
+
+```
+dist/
+└── VaneMonitorClient/
+    ├── VaneMonitorClient        ← the executable (Linux) or .exe (Windows)
+    ├── _internal/               ← bundled libraries (do not delete)
+    └── ...
+```
+
+Place `client_config.json` alongside the executable before running it on the target machine.
 
 ## Troubleshooting
 
@@ -274,12 +331,143 @@ or on Windows:
 py main.py
 ```
 
-## Quick Start
+## Linux Setup (Step-by-Step)
+
+### 1. Install system dependencies
 
 ```bash
-git clone https://github.com/your-org/your-client-repo.git
-cd your-client-repo/client
-python -m venv .venv
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git traceroute
+```
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/mysteriods/Vane-Monitor-Client.git
+cd Vane-Monitor-Client
+```
+
+### 3. Create a virtual environment
+
+```bash
+python3 -m venv venv
+```
+
+### 4. Activate the virtual environment
+
+```bash
+source venv/bin/activate
+```
+
+Your prompt will change to show `(venv)`. You must activate the venv every time you open a new terminal session before running the client.
+
+### 5. Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 6. Configure the client
+
+Copy or create `client_config.json` in the same directory:
+
+```bash
+cp client_config.json.example client_config.json  # if an example exists
+# or create it manually:
+nano client_config.json
+```
+
+Minimum required content:
+
+```json
+{
+    "client_name": "my-linux-host",
+    "server_url": "http://your-server-ip:5000",
+    "test_interval": 60,
+    "verify_ssl": false
+}
+```
+
+### 7. Run the client
+
+```bash
+python main.py
+```
+
+### Updating to the latest version
+
+If the remote was force-pushed (common during early development):
+
+```bash
+git fetch origin
+git reset --hard origin/main
+```
+
+Or for a normal pull:
+
+```bash
+git pull --rebase
+```
+
+### Run the client without activating the venv every time
+
+```bash
+venv/bin/python main.py
+```
+
+### Run as a background service (optional)
+
+Create a simple systemd service so the client starts automatically on boot:
+
+```bash
+sudo nano /etc/systemd/system/vane-client.service
+```
+
+Paste the following (adjust paths to match your install location):
+
+```ini
+[Unit]
+Description=Vane Monitor Client
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/Vane-Monitor-Client
+ExecStart=/home/YOUR_USERNAME/Vane-Monitor-Client/venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable vane-client
+sudo systemctl start vane-client
+```
+
+Check status and logs:
+
+```bash
+sudo systemctl status vane-client
+journalctl -u vane-client -f
+```
+
+---
+
+## Quick Start (Linux)
+
+```bash
+sudo apt install -y python3 python3-venv git traceroute
+git clone https://github.com/mysteriods/Vane-Monitor-Client.git
+cd Vane-Monitor-Client
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
