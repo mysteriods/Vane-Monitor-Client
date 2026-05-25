@@ -223,13 +223,13 @@ pip install -r requirements.txt
 
 ### Build on Windows (produces `.exe`)
 
-Using the included build script (from the repo root):
+From the repo root:
 
 ```powershell
-.\scripts\build_client.ps1
+.\build_client.ps1
 ```
 
-Or manually from this directory:
+Or manually:
 
 ```powershell
 pyinstaller VaneMonitorClient.spec
@@ -238,13 +238,7 @@ pyinstaller VaneMonitorClient.spec
 The executable is written to:
 
 ```
-dist\VaneMonitorClient\VaneMonitorClient.exe
-```
-
-To run it on any Windows machine (no Python needed):
-
-```powershell
-.\dist\VaneMonitorClient\VaneMonitorClient.exe
+dist\VaneMonitorClient.exe
 ```
 
 ### Build on Linux (produces a native binary)
@@ -255,7 +249,13 @@ Activate your venv first:
 source venv/bin/activate
 ```
 
-Then build:
+Then build using the included script:
+
+```bash
+bash build_client.sh
+```
+
+Or manually:
 
 ```bash
 pyinstaller VaneMonitorClient.spec
@@ -264,17 +264,15 @@ pyinstaller VaneMonitorClient.spec
 The binary is written to:
 
 ```
-dist/VaneMonitorClient/VaneMonitorClient
+dist/VaneMonitorClient
 ```
 
 Make it executable and run it:
 
 ```bash
-chmod +x dist/VaneMonitorClient/VaneMonitorClient
-./dist/VaneMonitorClient/VaneMonitorClient
+chmod +x dist/VaneMonitorClient
+./dist/VaneMonitorClient
 ```
-
-To distribute to another Linux machine, copy the entire `dist/VaneMonitorClient/` folder (not just the binary — it depends on files in that directory).
 
 ### Build output structure
 
