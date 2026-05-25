@@ -333,19 +333,21 @@ class NetworkMonitor:
             if self.platform == 'windows':
                 cmd = ['tracert', '-h', str(max_hops), target]
             else:
-                traceroute_cmd = 'traceroute'
-                if platform.system().lower() == 'linux':
-                    traceroute_cmd = 'tracepath' if subprocess.run(['which', 'tracepath'], capture_output=True).returncode == 0 else 'traceroute'
-
-                if traceroute_cmd == 'tracepath':
-                    cmd = ['tracepath', target]
+                # Prefer traceroute (supports -m and per-hop timeouts); fall back to tracepath
+                if subprocess.run(['which', 'traceroute'], capture_output=True).returncode == 0:
+                    cmd = ['traceroute', '-m', str(max_hops), target]
                 else:
-                    cmd = [traceroute_cmd, '-m', str(max_hops), target]
+                    cmd = ['tracepath', '-m', str(max_hops), target]
 
             start_time = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                output = result.stdout
+            except subprocess.TimeoutExpired as te:
+                # Use whatever partial output was collected before the timeout
+                output = (te.stdout or b'').decode('utf-8', errors='replace') if isinstance(te.stdout, bytes) else (te.stdout or '')
+                logger.warning('Traceroute to %s timed out; using partial output (%d lines)', target, output.count('\n'))
             end_time = time.time()
-            output = result.stdout
 
             hops = []
             parsed_hops = []
