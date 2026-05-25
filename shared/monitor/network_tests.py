@@ -412,6 +412,85 @@ class NetworkMonitor:
                 'error': str(exc),
             }
 
+    def jitter_test(self, target: str, count: int = 10, timeout: int = 5) -> Dict[str, Any]:
+        """
+        Perform jitter test (variation in ping latency).
+        All individual pings are fired concurrently via a thread pool so the
+        total wall-clock time is roughly equal to one RTT instead of count x RTT.
+        """
+        logger.info(f"Testing jitter to {target}...")
+
+        def _single_ping():
+            """Send one ping and return the RTT in ms, or None on failure."""
+            if self.platform == 'windows':
+                cmd = ['ping', '-n', '1', '-w', str(timeout * 1000), target]
+            else:
+                cmd = ['ping', '-c', '1', '-W', str(timeout), target]
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=timeout + 2
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if 'time=' in line.lower() or 'zeit=' in line.lower():
+                            try:
+                                time_part = (
+                                    line.lower().split('time=')[-1]
+                                    if 'time=' in line.lower()
+                                    else line.lower().split('zeit=')[-1]
+                                )
+                                rtt_str = time_part.split()[0].replace('ms', '').replace('<', '')
+                                return float(rtt_str)
+                            except (ValueError, IndexError):
+                                continue
+            except Exception:
+                pass
+            return None
+
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            rtts: List[float] = []
+            with ThreadPoolExecutor(max_workers=count) as executor:
+                futures = [executor.submit(_single_ping) for _ in range(count)]
+                for fut in as_completed(futures):
+                    val = fut.result()
+                    if val is not None:
+                        rtts.append(val)
+
+            if len(rtts) >= 2:
+                import statistics as _stats
+                avg_rtt = _stats.mean(rtts)
+                jitter = _stats.stdev(rtts)
+                return {
+                    'test_type': 'jitter',
+                    'target': target,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'success': True,
+                    'sample_count': len(rtts),
+                    'avg_rtt_ms': round(avg_rtt, 2),
+                    'jitter_ms': round(jitter, 2),
+                    'min_rtt_ms': round(min(rtts), 2),
+                    'max_rtt_ms': round(max(rtts), 2),
+                }
+            else:
+                return {
+                    'test_type': 'jitter',
+                    'target': target,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'success': False,
+                    'error': 'Insufficient samples collected',
+                }
+        except Exception as e:
+            logger.error(f"Jitter test to {target} failed: {e}")
+            return {
+                'test_type': 'jitter',
+                'target': target,
+                'timestamp': datetime.utcnow().isoformat(),
+                'success': False,
+                'error': str(e),
+            }
+
     def run_test(self, test_type: str, target: str, **kwargs) -> Dict[str, Any]:
         if test_type == 'ping':
             return self.ping_test(target, **kwargs)
@@ -421,6 +500,8 @@ class NetworkMonitor:
             return self.dns_test(target, **kwargs)
         if test_type == 'traceroute':
             return self.traceroute_test(target, **kwargs)
+        if test_type == 'jitter':
+            return self.jitter_test(target, **kwargs)
 
         return {
             'test_type': test_type,
